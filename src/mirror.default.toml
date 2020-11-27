@@ -25,6 +25,13 @@ contact = "your@email.com"
 # Perform rustup synchronization. Set this to false if you only want to mirror crates.io.
 sync = true
 
+# Platform (ex. x86_64-apple-darwin) to sync for Rustup files, default is all 
+# platforms (https://github.com/rust-lang/rustup.rs#other-installation-methods)
+# target_platform = ""
+
+# Target extension for all rustup files (ex: tar.xz)
+# target_extension = ""
+
 # Number of download threads to use when downloading rustup components.
 # This should be set lower than crates, as rustup consists of large files.
 download_threads = 4

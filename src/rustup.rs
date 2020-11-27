@@ -73,6 +73,38 @@ quick_error! {
     }
 }
 
+pub fn get_platforms(target_platform: Option<&str>) -> Vec<String> {
+    if let Some(platform) = target_platform {
+        if PLATFORMS.contains(&platform) {
+            vec![platform.into()]
+        } else {
+            vec![]
+        }
+    } else {
+        // there's a lot of allocation going on here, we should fix this at
+        // some point
+        PLATFORMS.iter().cloned().map(|x| x.to_owned()).collect()
+    }
+}
+
+pub fn get_platforms_exe(target_platform: Option<&str>) -> Vec<String> {
+    if let Some(platform) = target_platform {
+        if PLATFORMS_EXE.contains(&platform) {
+            vec![platform.into()]
+        } else {
+            vec![]
+        }
+    } else {
+        // there's a lot of allocation going on here, we should fix this at
+        // some point
+        PLATFORMS_EXE
+            .iter()
+            .cloned()
+            .map(|x| x.to_owned())
+            .collect()
+    }
+}
+
 /// Synchronize one rustup-init file.
 pub fn sync_one_init(
     path: &Path,
@@ -105,12 +137,16 @@ pub fn sync_one_init(
 pub fn sync_rustup_init(
     path: &Path,
     source: &str,
+    platform: &Option<String>,
     prefix: String,
     threads: usize,
     retries: usize,
     user_agent: &HeaderValue,
 ) -> Result<(), SyncError> {
-    let count = PLATFORMS.len() + PLATFORMS_EXE.len();
+    let platforms = get_platforms(platform.as_deref());
+    let platforms_exe = get_platforms_exe(platform.as_deref());
+
+    let count = platforms.len() + platforms_exe.len();
 
     let (pb_thread, sender) = progress_bar(Some(count), prefix);
 
@@ -118,10 +154,10 @@ pub fn sync_rustup_init(
 
     Pool::new(threads as u32).scoped(|scoped| {
         let error_occurred = &errors_occurred;
-        for platform in PLATFORMS {
+        for platform in platforms {
             let s = sender.clone();
             scoped.execute(move || {
-                if let Err(e) = sync_one_init(path, source, platform, false, retries, user_agent) {
+                if let Err(e) = sync_one_init(path, source, &platform, false, retries, user_agent) {
                     s.send(ProgressBarMessage::Println(format!(
                         "Downloading {} failed: {:?}",
                         path.display(),
@@ -135,10 +171,10 @@ pub fn sync_rustup_init(
             })
         }
 
-        for platform in PLATFORMS_EXE {
+        for platform in platforms_exe {
             let s = sender.clone();
             scoped.execute(move || {
-                if let Err(e) = sync_one_init(path, source, platform, true, retries, user_agent) {
+                if let Err(e) = sync_one_init(path, source, &platform, true, retries, user_agent) {
                     s.send(ProgressBarMessage::Println(format!(
                         "Downloading {} failed: {:?}",
                         path.display(),
@@ -399,6 +435,8 @@ pub fn sync_rustup_channel(
     path: &Path,
     source: &str,
     threads: usize,
+    target_platform: &Option<String>,
+    target_extension: &Option<String>,
     prefix: String,
     channel: &str,
     retries: usize,
@@ -427,7 +465,23 @@ pub fn sync_rustup_channel(
     }
 
     // Open toml file, find all files to download
-    let (date, files) = rustup_download_list(&channel_part_path, source)?;
+    let (date, mut files) = rustup_download_list(&channel_part_path, source)?;
+
+    if let Some(target_platform) = target_platform {
+        // only sync the files from the target platform
+        files = files
+            .into_iter()
+            .filter(|x| x.0.contains(target_platform))
+            .collect();
+    }
+
+    if let Some(target_extension) = target_extension {
+        // only sync the files that end in the target extension
+        files = files
+            .into_iter()
+            .filter(|x| x.0.ends_with(target_extension))
+            .collect();
+    }
 
     // Create progress bar
     let (pb_thread, sender) = progress_bar(Some(files.len()), prefix);
@@ -489,6 +543,7 @@ pub fn sync(
     if let Err(e) = sync_rustup_init(
         path,
         &rustup.source,
+        &rustup.target_platform,
         prefix,
         rustup.download_threads,
         mirror.retries,
@@ -507,6 +562,8 @@ pub fn sync(
             path,
             &rustup.source,
             rustup.download_threads,
+            &rustup.target_platform,
+            &rustup.target_extension,
             prefix,
             "stable",
             mirror.retries,
@@ -527,6 +584,8 @@ pub fn sync(
             path,
             &rustup.source,
             rustup.download_threads,
+            &rustup.target_platform,
+            &rustup.target_extension,
             prefix,
             "beta",
             mirror.retries,
@@ -547,6 +606,8 @@ pub fn sync(
             path,
             &rustup.source,
             rustup.download_threads,
+            &rustup.target_platform,
+            &rustup.target_extension,
             prefix,
             "nightly",
             mirror.retries,

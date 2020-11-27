@@ -26,6 +26,8 @@ pub struct MirrorSection {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RustupSection {
     pub sync: bool,
+    pub target_platform: Option<String>,
+    pub target_extension: Option<String>,
     pub download_threads: usize,
     pub source: String,
     pub keep_latest_stables: Option<usize>,
