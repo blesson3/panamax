@@ -24,7 +24,7 @@ env_logger = "0.6.2"
 sha2 = "0.8.0"
 url = "1.7.2"
 glob = "0.3.0"
-git2 = "0.9.1"
+git2 = { version = "0.9.1", features = ["vendored-openssl"] }
 serde_json = "1.0.40"
 iron = "0.6.1"
 router = "0.6.0"
