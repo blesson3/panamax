@@ -1,5 +1,5 @@
 use crate::download::{download, DownloadError};
-use crate::mirror::{CratesSection, MirrorError, MirrorSection};
+use crate::mirror::{CratesSection, MirrorError, MirrorSection, ServeSection};
 use crate::progress_bar::{progress_bar, ProgressBarMessage};
 use console::style;
 use git2::{
@@ -9,8 +9,11 @@ use git2::{
 use reqwest::header::HeaderValue;
 use scoped_threadpool::Pool;
 use serde::{Deserialize, Serialize};
-use std::io::{self, BufRead, Cursor};
 use std::path::Path;
+use std::{
+    fs::File,
+    io::{self, BufRead, Cursor},
+};
 
 static DEFAULT_CONFIG_JSON_CONTENT: &[u8] = br#"{
   "dl": "https://crates.io/api/v1/crates",
@@ -213,7 +216,8 @@ pub fn sync_crates_files(
                                 .expect("Channel send should not fail");
                             }
                         }
-                        s.send(ProgressBarMessage::Increment).expect("progress bar increment error");
+                        s.send(ProgressBarMessage::Increment)
+                            .expect("progress bar increment error");
                     });
                 }
 
@@ -369,11 +373,11 @@ pub fn build_config_json_content(base_url: &str) -> Result<Vec<u8>, SyncError> {
 
 /// Merge the crates.io-index's master branch with origin/master,
 /// keeping config.json up to date.
-pub fn merge_crates_repo(path: &Path, crates: &CratesSection) -> Result<(), SyncError> {
+pub fn merge_crates_repo(path: &Path, serve: &ServeSection) -> Result<(), SyncError> {
     eprintln!("{} Merging crates.io-index...  ", style("[3/3]").bold());
 
     let repo_path = path.join("crates.io-index");
-    let repo = Repository::open(repo_path)?;
+    let repo = Repository::open(&repo_path)?;
 
     let signature = Signature::now("Panamax", "panamax@panamax")?;
 
@@ -393,7 +397,7 @@ pub fn merge_crates_repo(path: &Path, crates: &CratesSection) -> Result<(), Sync
     let master_tree = master.peel_to_tree()?;
 
     // If base_url is set, update config.json if it needs to be updated.
-    if let Some(ref base_url) = crates.base_url {
+    if let Some(ref base_url) = serve.base_url {
         let content = build_config_json_content(&base_url)?;
         if !is_config_json_up_to_date(&repo, &master_tree, &content)? {
             commit_new_config_json(&repo, &master, &origin_master_tree, &signature, &content)?;
@@ -411,6 +415,12 @@ pub fn merge_crates_repo(path: &Path, crates: &CratesSection) -> Result<(), Sync
         }
     }
 
+    // add `git-daemon-export-ok` file so we can serve it later
+    let mut export = repo_path.clone();
+    export.push(".git");
+    export.push("git-daemon-export-ok");
+    let _ = File::create(export);
+
     Ok(())
 }
 
@@ -419,6 +429,7 @@ pub fn sync(
     path: &Path,
     mirror: &MirrorSection,
     crates: &CratesSection,
+    serve: &ServeSection,
     user_agent: &HeaderValue,
 ) -> Result<(), MirrorError> {
     eprintln!("{}", style("Syncing Crates repositories...").bold());
@@ -435,7 +446,7 @@ pub fn sync(
         return Ok(());
     }
 
-    if let Err(e) = merge_crates_repo(path, crates) {
+    if let Err(e) = merge_crates_repo(path, serve) {
         eprintln!("Merging crates.io-index repository failed: {:?}", e);
         eprintln!("You will need to sync again to finish this download.");
     }

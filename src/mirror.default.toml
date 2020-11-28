@@ -66,8 +66,14 @@ source = "https://crates.io/api/v1/crates"
 # Where to clone the crates.io-index repository from.
 source_index = "https://github.com/rust-lang/crates.io-index"
 
+[serve]
+# These are the configuration parameters for the serving part of the mirror.
+
+# The port to serve the webserver on.
+port = 8070
+
 # URL where this mirror's crates directory can be accessed from.
 # Used for rewriting crates.io-index's config.json.
 # Remove this parameter to perform no rewriting.
-base_url = "http://panamax.internal/crates"
-
+# base_url = "http://panamax.internal/crates"
+base_url = "http://localhost:8070/crates"

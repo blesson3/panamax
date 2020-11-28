@@ -41,6 +41,11 @@ pub struct CratesSection {
     pub download_threads: usize,
     pub source: String,
     pub source_index: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ServeSection {
+    pub port: u16,
     pub base_url: Option<String>,
 }
 
@@ -49,6 +54,7 @@ pub struct Mirror {
     pub mirror: MirrorSection,
     pub rustup: Option<RustupSection>,
     pub crates: Option<CratesSection>,
+    pub serve: Option<ServeSection>,
 }
 
 pub fn create_mirror_directories(path: &Path) -> Result<(), io::Error> {
@@ -151,14 +157,17 @@ pub fn sync(path: &Path) -> Result<(), MirrorError> {
         eprintln!("Rustup section missing, skipping...");
     }
 
-    if let Some(crates) = mirror.crates {
-        if crates.sync {
-            crate::crates::sync(path, &mirror.mirror, &crates, &user_agent)?;
-        } else {
-            eprintln!("Crates sync is disabled, skipping...");
+    match (mirror.crates, mirror.serve) {
+        (Some(crates), Some(serve)) => {
+            if crates.sync {
+                crate::crates::sync(path, &mirror.mirror, &crates, &serve, &user_agent)?
+            } else {
+                eprintln!("Crates sync is disabled, skipping...");
+            }
         }
-    } else {
-        eprintln!("Crates section missing, skipping...");
+        _ => {
+            eprintln!("Crates or serve section missing, skipping...");
+        }
     }
 
     eprintln!("Sync complete.");
