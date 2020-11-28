@@ -51,6 +51,9 @@ static PLATFORMS_EXE: &[&str] = &[
     "x86_64-pc-windows-msvc",
 ];
 
+/// Only sync the last three available rustup versions.
+static LAST_RUSTUP_VERSIONS: usize = 3;
+
 quick_error! {
     #[derive(Debug)]
     pub enum SyncError {
@@ -66,11 +69,20 @@ quick_error! {
         Serialize(err: toml::ser::Error) {
             from()
         }
+        SerdeSerialize(err: serde_json::Error) {
+            from()
+        }
         StripPrefix(err: std::path::StripPrefixError) {
             from()
         }
         FailedDownloads(count: usize) {}
     }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct RustupReference {
+    #[serde(rename = "ref")]
+    reference: String,
 }
 
 pub fn get_platforms(target_platform: Option<&str>) -> Vec<String> {
@@ -110,25 +122,56 @@ pub fn sync_one_init(
     path: &Path,
     source: &str,
     platform: &str,
+    archive_version: Option<&str>,
     is_exe: bool,
     retries: usize,
     user_agent: &HeaderValue,
 ) -> Result<(), DownloadError> {
-    let local_path = if is_exe {
-        path.join("rustup/dist")
-            .join(platform)
-            .join("rustup-init.exe")
-    } else {
-        path.join("rustup/dist").join(platform).join("rustup-init")
-    };
+    if let Some(archive_version) = archive_version {
+        // get from "/rustup/archive/{version}/{platform}/rustup-init"
+        let path = path
+            .join("rustup")
+            .join("archive")
+            .join(archive_version)
+            .join(platform);
 
-    let source_url = if is_exe {
-        format!("{}/rustup/dist/{}/rustup-init.exe", source, platform)
-    } else {
-        format!("{}/rustup/dist/{}/rustup-init", source, platform)
-    };
+        let local_path = if is_exe {
+            path.join("rustup-init.exe")
+        } else {
+            path.join("rustup-init")
+        };
 
-    download_with_sha256_file(&source_url, &local_path, retries, false, user_agent)?;
+        let source_url = if is_exe {
+            format!(
+                "{}/rustup/archive/{}/{}/rustup-init.exe",
+                source, archive_version, platform
+            )
+        } else {
+            format!(
+                "{}/rustup/archive/{}/{}/rustup-init",
+                source, archive_version, platform
+            )
+        };
+
+        download_with_sha256_file(&source_url, &local_path, retries, false, user_agent)?;
+    } else {
+        // get from "/rustup/dist/{platform}/rustup-init"
+        let path = path.join("rustup").join("dist").join(platform);
+
+        let local_path = if is_exe {
+            path.join("rustup-init.exe")
+        } else {
+            path.join("rustup-init")
+        };
+
+        let source_url = if is_exe {
+            format!("{}/rustup/dist/{}/rustup-init.exe", source, platform)
+        } else {
+            format!("{}/rustup/dist/{}/rustup-init", source, platform)
+        };
+
+        download_with_sha256_file(&source_url, &local_path, retries, false, user_agent)?;
+    }
 
     Ok(())
 }
@@ -143,49 +186,59 @@ pub fn sync_rustup_init(
     retries: usize,
     user_agent: &HeaderValue,
 ) -> Result<(), SyncError> {
-    let platforms = get_platforms(platform.as_deref());
-    let platforms_exe = get_platforms_exe(platform.as_deref());
+    let mut all_platforms = vec![];
+    all_platforms.append(&mut get_platforms(platform.as_deref()));
+    all_platforms.append(&mut get_platforms_exe(platform.as_deref()));
 
-    let count = platforms.len() + platforms_exe.len();
+    // get all rustup tags from github to source archive versions
+    let rustup_versions_local_path = path.join("rustup").join("github-tags.json");
+    download(
+        "https://api.github.com/repos/rust-lang/rustup/git/refs/tags",
+        &rustup_versions_local_path,
+        None,
+        5,
+        true,
+        user_agent,
+    )?;
+    let versions: Vec<RustupReference> =
+        serde_json::from_str(&fs::read_to_string(rustup_versions_local_path)?)
+            .map_err(|x| SyncError::SerdeSerialize(x))?;
 
+    // seed with None so that we get the dist version too (instead of only archives
+    // of versions)
+    let mut tags: Vec<Option<String>> = vec![None];
+    // only retrieve the last $LAST_RUSTUP_VERSIONS versions (ex: 10)
+    for v in &versions[(versions.len() - LAST_RUSTUP_VERSIONS)..versions.len()] {
+        tags.push(Some(v.reference.replace("refs/tags/", "")));
+    }
+
+    let count = all_platforms.len() * tags.len();
     let (pb_thread, sender) = progress_bar(Some(count), prefix);
-
     let errors_occurred = AtomicUsize::new(0);
 
     Pool::new(threads as u32).scoped(|scoped| {
         let error_occurred = &errors_occurred;
-        for platform in platforms {
-            let s = sender.clone();
-            scoped.execute(move || {
-                if let Err(e) = sync_one_init(path, source, &platform, false, retries, user_agent) {
-                    s.send(ProgressBarMessage::Println(format!(
-                        "Downloading {} failed: {:?}",
-                        path.display(),
-                        e
-                    )))
-                    .expect("Channel send should not fail");
-                    error_occurred.fetch_add(1, Ordering::Release);
-                }
-                s.send(ProgressBarMessage::Increment)
-                    .expect("Channel send should not fail");
-            })
-        }
-
-        for platform in platforms_exe {
-            let s = sender.clone();
-            scoped.execute(move || {
-                if let Err(e) = sync_one_init(path, source, &platform, true, retries, user_agent) {
-                    s.send(ProgressBarMessage::Println(format!(
-                        "Downloading {} failed: {:?}",
-                        path.display(),
-                        e
-                    )))
-                    .expect("Channel send should not fail");
-                    error_occurred.fetch_add(1, Ordering::Release);
-                }
-                s.send(ProgressBarMessage::Increment)
-                    .expect("Channel send should not fail");
-            })
+        for platform in &all_platforms {
+            for tag in &tags {
+                let tag = tag.as_deref();
+                let s = sender.clone();
+                scoped.execute(move || {
+                    let is_exe = PLATFORMS_EXE.contains(&&platform.as_str());
+                    if let Err(e) =
+                        sync_one_init(path, source, &platform, tag, is_exe, retries, user_agent)
+                    {
+                        s.send(ProgressBarMessage::Println(format!(
+                            "Downloading {} failed: {:?}",
+                            path.display(),
+                            e
+                        )))
+                        .expect("Channel send should not fail");
+                        error_occurred.fetch_add(1, Ordering::Release);
+                    }
+                    s.send(ProgressBarMessage::Increment)
+                        .expect("Channel send should not fail");
+                })
+            }
         }
     });
 
